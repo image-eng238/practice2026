@@ -26,8 +26,8 @@ int main(void) {
             int R = pixel[i * stride + j * num_chn + 2];
 
             pixel[pic(i, j, 0)] = clamp(B * 4);
-            pixel[pic(i, j, 1)] = clamp(B * 4);
-            pixel[pic(i, j, 2)] = clamp(B * 4);
+            pixel[pic(i, j, 1)] = clamp(G * 4);
+            pixel[pic(i, j, 2)] = clamp(R * 4);
         }
     }
 
