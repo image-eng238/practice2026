@@ -46,21 +46,8 @@ rgb2YCbCr(cv::Mat img) {
 }
 
 template <size_t X = 0>
-void quantize(cv::Mat& blk, const float* const qtable, const int quality = 75) {
-    auto QF = [](int q) {
-        assert(0 <= q && q <= 100);
-        q = q ? q : 1;
-        double qf;
-        if (q <= 50) {
-            qf = static_cast<int>(5000 / q);
-        } else {
-            qf = 200 - (2 * q);
-        }
-        qf = qf ? qf : 1;
-        return qf;
-    };
+void quantize(cv::Mat& blk, const float* const qtable, const float scale = 75) {
 
-    float Scale        = QF(75) / 100;
     const int width    = blk.cols;
     const int height   = blk.rows;
     const int num_chn  = blk.channels();
@@ -70,7 +57,7 @@ void quantize(cv::Mat& blk, const float* const qtable, const int quality = 75) {
     for (size_t i = 0; i < height; ++i) {
         for (size_t j = 0; j < width; ++j) {
             const auto val      = pixel[i * stride + j];
-            const auto stepsize = clamp(qtable[i * stride + j] * Scale);
+            const auto stepsize = clamp(qtable[i * stride + j] * scale);
             if constexpr (X == 0) { // 量子化
                 pixel[i * stride + j] = roundf(val / stepsize);
             } else { // 逆量子化
@@ -80,7 +67,7 @@ void quantize(cv::Mat& blk, const float* const qtable, const int quality = 75) {
     }
 }
 
-int main(void) {
+int main(int argc, char* argv[]) {
     std::cout << "cv_test" << std::endl;
     cv::Mat image = cv::imread("H:/Documents/image_eng/practice2026/barbara.ppm", cv::IMREAD_ANYCOLOR);
     if (image.empty()) return EXIT_FAILURE;
@@ -92,6 +79,27 @@ int main(void) {
     cv::split(image, ycrcb);                              //[0] -> Y, [1] -> Cr, [2] -> Cb
     cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 0.5, 0.5); // 444 -> 420
     cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 0.5, 0.5); // 444 -> 420
+
+    int quality = 75;
+    if (argc > 1) {
+        quality = std::stoi(argv[1]);
+    }
+
+    auto QF = [](int q) {
+        assert(0 <= q && q <= 100);
+        q = q ? q : 1;
+        q = q > 100 ? 100 : q;
+        int qf;
+        if (q <= 50) {
+            qf = static_cast<int>(5000 / q);
+        } else {
+            qf = 200 - (2 * q);
+        }
+        qf = qf ? qf : 1;
+        return qf;
+    };
+
+    float scale = QF(quality) / 100.0f;
 
     for (int c = 0; c < num_chn; ++c) {
         const int width  = ycrcb[c].cols;
@@ -105,9 +113,9 @@ int main(void) {
                 // Forward DCT
                 cv::dct(blk, blk, FWD);
                 // 量子化
-                quantize<FWD>(blk, qmatrix[c > 0]);
+                quantize<FWD>(blk, qmatrix[c > 0], scale);
                 // 逆量子化
-                quantize<INV>(blk, qmatrix[c > 0]);
+                quantize<INV>(blk, qmatrix[c > 0], scale);
 
                 // Inverse IDCT
                 cv::dct(blk, blk, 1);
