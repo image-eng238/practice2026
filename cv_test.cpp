@@ -76,17 +76,24 @@ int main(int argc, char* argv[]) {
 
     image = rgb2YCbCr(image);
     std::vector<cv::Mat> ycrcb;
-    cv::split(image, ycrcb);                              //[0] -> Y, [1] -> Cr, [2] -> Cb
-    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 0.5, 0.5); // 444 -> 420
-    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 0.5, 0.5); // 444 -> 420
+    cv::split(image, ycrcb); //[0] -> Y, [1] -> Cr, [2] -> Cb
+
+    int dH = 2, dV = 2;
+    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
+    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
 
     int quality = 75;
     if (argc > 1) {
-        quality = std::stoi(argv[1]);
+        try {
+            quality = std::stoi(argv[1]);
+        } catch (...) {
+            std::cout << "the argument of 1 is image quality" << std::endl;
+            exit(1);
+        }
     }
 
     auto QF = [](int q) {
-        assert(0 <= q && q <= 100);
+        // assert(0 <= q && q <= 100);
         q = q ? q : 1;
         q = q > 100 ? 100 : q;
         int qf;
@@ -101,34 +108,45 @@ int main(int argc, char* argv[]) {
 
     float scale = QF(quality) / 100.0f;
 
-    for (int c = 0; c < num_chn; ++c) {
-        const int width  = ycrcb[c].cols;
-        const int height = ycrcb[c].rows;
-        for (int y = 0; y < height; y += 8) {
-            for (int x = 0; x < width; x += 8) {
-                auto tmp = ycrcb[c](cv::Rect(x, y, 8, 8));
-                cv::Mat blk;
-                tmp.convertTo(blk, CV_32F);
-                blk -= 128.0f;
-                // Forward DCT
-                cv::dct(blk, blk, FWD);
-                // 量子化
-                quantize<FWD>(blk, qmatrix[c > 0], scale);
-                // 逆量子化
-                quantize<INV>(blk, qmatrix[c > 0], scale);
+    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale) {
+        cv::Mat blk;
+        tmp.convertTo(blk, CV_32F);
+        blk -= 128.0f;
+        // Forward DCT
+        cv::dct(blk, blk, FWD);
+        // 量子化
+        quantize<FWD>(blk, qmatrix, scale);
+        // 逆量子化
+        quantize<INV>(blk, qmatrix, scale);
 
-                // Inverse IDCT
-                cv::dct(blk, blk, 1);
-                blk += 128.0f;
-                blk.convertTo(tmp, CV_8U);
+        // Inverse IDCT
+        cv::dct(blk, blk, 1);
+        blk += 128.0f;
+        blk.convertTo(tmp, CV_8U);
 
-                // エントロピー符号化
+        // エントロピー符号化
+    };
+
+    // MCU 単位での処理
+    const int width  = ycrcb[0].cols;
+    const int height = ycrcb[0].rows;
+    for (int y = 0, cy = 0; y < height; y += 8 * dV, cy += 8) {
+        for (int x = 0, cx = 0; x < width; x += 8 * dH, cx += 8) {
+            for (int i = 0; i < dV; ++i) {
+                for (int j = 0; j < dH; ++j) {
+                    auto tmpY = ycrcb[0](cv::Rect(x + j * 8, y + i * 8, 8, 8)); // Y
+                    blkproc(tmpY, qmatrix[0], scale);
+                }
+                auto tmpCr = ycrcb[1](cv::Rect(cx, cy, 8, 8)); // Cr
+                blkproc(tmpCr, qmatrix[1], scale);
+                auto tmpCy = ycrcb[2](cv::Rect(cx, cy, 8, 8)); // Cb
+                blkproc(tmpCr, qmatrix[1], scale);
             }
         }
     }
 
-    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 1 / 0.5, 1 / 0.5); // 420 -> 444
-    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 1 / 0.5, 1 / 0.5); // 420 -> 444
+    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
+    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
     cv::merge(ycrcb, image);
 
     cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
