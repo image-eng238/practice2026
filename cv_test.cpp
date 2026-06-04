@@ -86,9 +86,11 @@ void encode(int run, int val, const unsigned int* const t_cwd, const unsigned in
     if constexpr (Type == DC) {
         // DC
         // t_cwd[s] を　t_len[s] ビットの値としてビットストリームに書き込む
-    } else {
+    } else if constexpr (Type == AC) {
         // AC
         // t_cwd[(run << 4) + s] を　t_len[(run << 4) + s] ビットの値としてビットストリームに書き込む
+    } else {
+        static_assert(false, "テンプレート引数には AC か DC を指定してください");
     }
     if (s != 0) {
         val = (val < 0) ? val - 1 : val;
