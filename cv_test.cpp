@@ -3,9 +3,17 @@
 #include <opencv2/opencv.hpp>
 
 #include "qtable.hpp"
+#include "zigzag.hpp"
+#include "huffman_tables.hpp"
 
-constexpr size_t FWD = 0;
-constexpr size_t INV = 1;
+enum {
+    FWD    = 0,
+    INV    = 1,
+    DC     = 0,
+    AC     = 1,
+    Luma   = 0,
+    Chroma = 1,
+};
 
 template <typename T>
 // auto clamp = [](T val) {
@@ -15,8 +23,7 @@ T clamp(T val) {
     return val;
 }
 
-cv::Mat
-rgb2YCbCr(cv::Mat img) {
+cv::Mat rgb2YCbCr(cv::Mat img) {
     // RGB -> YCbCr, img はシャローコピー
     const int width   = img.cols;
     const int height  = img.rows;
@@ -67,6 +74,28 @@ void quantize(cv::Mat& blk, const float* const qtable, const float scale = 75) {
     }
 }
 
+template <size_t Type>
+void encode(int run, int val, const unsigned int* const t_cwd, const unsigned int* const t_len) {
+    int s     = 0; // 何ビット入るか
+    int uval  = (val < 0) ? -val : val;
+    int bound = 1;
+    while (uval >= bound) {
+        bound += bound;
+        ++s;
+    }
+    if constexpr (Type == DC) {
+        // DC
+        // t_cwd[s] を　t_len[s] ビットの値としてビットストリームに書き込む
+    } else {
+        // AC
+        // t_cwd[(run << 4) + s] を　t_len[(run << 4) + s] ビットの値としてビットストリームに書き込む
+    }
+    if (s != 0) {
+        val = (val < 0) ? val - 1 : val;
+    }
+    // val を sビットの値としてビットストリームに書き込む
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "cv_test" << std::endl;
     cv::Mat image = cv::imread("H:/Documents/image_eng/practice2026/barbara.ppm", cv::IMREAD_ANYCOLOR);
@@ -81,6 +110,8 @@ int main(int argc, char* argv[]) {
     int dH = 2, dV = 2;
     cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
     cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
+    /*YY|C.*/
+    /*YY|..*/
 
     int quality = 75;
     if (argc > 1) {
@@ -108,7 +139,7 @@ int main(int argc, char* argv[]) {
 
     float scale = QF(quality) / 100.0f;
 
-    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale) {
+    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale, int& prev_dc, const int c) {
         cv::Mat blk;
         tmp.convertTo(blk, CV_32F);
         blk -= 128.0f;
@@ -116,6 +147,33 @@ int main(int argc, char* argv[]) {
         cv::dct(blk, blk, FWD);
         // 量子化
         quantize<FWD>(blk, qmatrix, scale);
+
+        auto p   = reinterpret_cast<float*>(blk.data);
+        // 現在のブロックのDC成分から前のブロックのDC成分を引く
+        int diff = p[0] - prev_dc;
+        prev_dc  = p[0]; // prev_dcを更新
+        encode<DC>(0, diff, DC_cwd[c], DC_len[c]);
+
+        // AC成分のためのジグザクスキャン・ハフマン符号
+        int zero_run = 0; // 0の連続数
+        for (int i = 1; i < 64; ++i) {
+            auto ac = static_cast<int>(p[zigzag_scan[i]]);
+            if (ac == 0) {
+                ++zero_run;
+            } else {
+                while (zero_run > 15) {
+                    encode<AC>(0xf, 0x0, AC_cwd[c], AC_len[c]);
+                    zero_run -= 16;
+                }
+                encode<AC>(zero_run, ac, AC_cwd[c], AC_len[c]);
+                zero_run = 0;
+            }
+        }
+        if (zero_run != 0) {
+            // EOB
+            encode<AC>(0x0, 0x0, AC_cwd[c], AC_len[c]);
+        }
+
         // 逆量子化
         quantize<INV>(blk, qmatrix, scale);
 
@@ -130,17 +188,20 @@ int main(int argc, char* argv[]) {
     // MCU 単位での処理
     const int width  = ycrcb[0].cols;
     const int height = ycrcb[0].rows;
+    // prev_dc[] には前のブロックのDC成分値が入る
+    int prev_dc[3]   = {};
+
     for (int y = 0, cy = 0; y < height; y += 8 * dV, cy += 8) {
         for (int x = 0, cx = 0; x < width; x += 8 * dH, cx += 8) {
             for (int i = 0; i < dV; ++i) {
                 for (int j = 0; j < dH; ++j) {
                     auto tmpY = ycrcb[0](cv::Rect(x + j * 8, y + i * 8, 8, 8)); // Y
-                    blkproc(tmpY, qmatrix[0], scale);
+                    blkproc(tmpY, qmatrix[Luma], scale, prev_dc[0], Luma);
                 }
                 auto tmpCr = ycrcb[1](cv::Rect(cx, cy, 8, 8)); // Cr
-                blkproc(tmpCr, qmatrix[1], scale);
+                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[1], Chroma);
                 auto tmpCy = ycrcb[2](cv::Rect(cx, cy, 8, 8)); // Cb
-                blkproc(tmpCr, qmatrix[1], scale);
+                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[2], Chroma);
             }
         }
     }
