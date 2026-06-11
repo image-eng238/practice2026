@@ -2,6 +2,7 @@
 #include <vector>
 #include <opencv2/opencv.hpp>
 
+#include "bitstream.hpp"
 #include "qtable.hpp"
 #include "zigzag.hpp"
 #include "huffman_tables.hpp"
@@ -75,7 +76,7 @@ void quantize(cv::Mat& blk, const float* const qtable, const float scale = 75) {
 }
 
 template <size_t Type>
-void encode(int run, int val, const unsigned int* const t_cwd, const unsigned int* const t_len) {
+void encode(int run, int val, const unsigned int* const t_cwd, const unsigned int* const t_len, bitstream& encbuf) {
     int s     = 0; // 何ビット入るか
     int uval  = (val < 0) ? -val : val;
     int bound = 1;
@@ -86,9 +87,11 @@ void encode(int run, int val, const unsigned int* const t_cwd, const unsigned in
     if constexpr (Type == DC) {
         // DC
         // t_cwd[s] を　t_len[s] ビットの値としてビットストリームに書き込む
+        encbuf.put_bits(t_cwd[s], t_len[s]);
     } else if constexpr (Type == AC) {
         // AC
-        // t_cwd[(run << 4) + s] を　t_len[(run << 4) + s] ビットの値としてビットストリームに書き込む
+        // t_cwd[(run << 4) + s] を t_len[(run << 4) + s] ビットの値としてビットストリームに書き込む
+        encbuf.put_bits(t_cwd[(run << 4) + s], t_len[(run << 4) + s]);
     } else {
         static_assert(false, "テンプレート引数には AC か DC を指定してください");
     }
@@ -96,12 +99,14 @@ void encode(int run, int val, const unsigned int* const t_cwd, const unsigned in
         val = (val < 0) ? val - 1 : val;
     }
     // val を sビットの値としてビットストリームに書き込む
+    encbuf.put_bits(val, s);
 }
 
 int main(int argc, char* argv[]) {
     std::cout << "cv_test" << std::endl;
     cv::Mat image = cv::imread("H:/Documents/image_eng/practice2026/barbara.ppm", cv::IMREAD_ANYCOLOR);
     if (image.empty()) return EXIT_FAILURE;
+    bitstream encbuf;
 
     const int num_chn = image.channels();
 
@@ -141,7 +146,7 @@ int main(int argc, char* argv[]) {
 
     float scale = QF(quality) / 100.0f;
 
-    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale, int& prev_dc, const int c) {
+    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale, int& prev_dc, const int c, bitstream& encbuf) {
         cv::Mat blk;
         tmp.convertTo(blk, CV_32F);
         blk -= 128.0f;
@@ -154,7 +159,7 @@ int main(int argc, char* argv[]) {
         // 現在のブロックのDC成分から前のブロックのDC成分を引く
         int diff = p[0] - prev_dc;
         prev_dc  = p[0]; // prev_dcを更新
-        encode<DC>(0, diff, DC_cwd[c], DC_len[c]);
+        encode<DC>(0, diff, DC_cwd[c], DC_len[c], encbuf);
 
         // AC成分のためのジグザクスキャン・ハフマン符号
         int zero_run = 0; // 0の連続数
@@ -164,16 +169,16 @@ int main(int argc, char* argv[]) {
                 ++zero_run;
             } else {
                 while (zero_run > 15) {
-                    encode<AC>(0xf, 0x0, AC_cwd[c], AC_len[c]);
+                    encode<AC>(0xf, 0x0, AC_cwd[c], AC_len[c], encbuf);
                     zero_run -= 16;
                 }
-                encode<AC>(zero_run, ac, AC_cwd[c], AC_len[c]);
+                encode<AC>(zero_run, ac, AC_cwd[c], AC_len[c], encbuf);
                 zero_run = 0;
             }
         }
         if (zero_run != 0) {
             // EOB
-            encode<AC>(0x0, 0x0, AC_cwd[c], AC_len[c]);
+            encode<AC>(0x0, 0x0, AC_cwd[c], AC_len[c], encbuf);
         }
 
         // 逆量子化
@@ -198,24 +203,27 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < dV; ++i) {
                 for (int j = 0; j < dH; ++j) {
                     auto tmpY = ycrcb[0](cv::Rect(x + j * 8, y + i * 8, 8, 8)); // Y
-                    blkproc(tmpY, qmatrix[Luma], scale, prev_dc[0], Luma);
+                    blkproc(tmpY, qmatrix[Luma], scale, prev_dc[0], Luma, encbuf);
                 }
                 auto tmpCr = ycrcb[1](cv::Rect(cx, cy, 8, 8)); // Cr
-                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[1], Chroma);
+                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[1], Chroma, encbuf);
                 auto tmpCy = ycrcb[2](cv::Rect(cx, cy, 8, 8)); // Cb
-                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[2], Chroma);
+                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[2], Chroma, encbuf);
             }
         }
     }
 
-    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
-    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
-    cv::merge(ycrcb, image);
+    auto length = encbuf.finalize();
+    std::cout << "codestream size = " << length << std::endl;
 
-    cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
-    cv::imshow("loaded image", image);
+    // cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
+    // cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
+    // cv::merge(ycrcb, image);
 
-    cv::waitKey(0);
-    cv::destroyAllWindows();
+    // cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
+    // cv::imshow("loaded image", image);
+
+    // cv::waitKey(0);
+    // cv::destroyAllWindows();
     return EXIT_SUCCESS;
 }
