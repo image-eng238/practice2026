@@ -6,6 +6,9 @@
 #include "qtable.hpp"
 #include "zigzag.hpp"
 #include "huffman_tables.hpp"
+#include "jpgheaders.hpp"
+#include "ycctype.hpp"
+#include "jpgmarkers.hpp"
 
 enum {
     FWD    = 0,
@@ -54,7 +57,7 @@ cv::Mat rgb2YCbCr(cv::Mat img) {
 }
 
 template <size_t X = 0>
-void quantize(cv::Mat& blk, const float* const qtable, const float scale = 75) {
+void quantize(cv::Mat& blk, const int* const qtable, const float scale = 75) {
 
     const int width    = blk.cols;
     const int height   = blk.rows;
@@ -114,9 +117,33 @@ int main(int argc, char* argv[]) {
     std::vector<cv::Mat> ycrcb;
     cv::split(image, ycrcb); //[0] -> Y, [1] -> Cr, [2] -> Cb
 
-    int dH = 2, dV = 2;
+    int YCCtype = YUV420;
+    if (argc > 2) {
+        if (std::string_view{"444"} == argv[2]) {
+            YCCtype = YUV444;
+        } else if (std::string_view{"422"} == argv[2]) {
+            YCCtype = YUV422;
+        } else if (std::string_view{"411"} == argv[2]) {
+            YCCtype = YUV411;
+        } else if (std::string_view{"440"} == argv[2]) {
+            YCCtype = YUV440;
+        } else if (std::string_view{"420"} == argv[2]) {
+            YCCtype = YUV420;
+        } else if (std::string_view{"410"} == argv[2]) {
+            YCCtype = YUV410;
+        } else if (std::string_view{"GRAY"} == argv[2]) {
+            YCCtype = GRAY;
+        } else {
+            std::cerr << "YCC type error" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+    }
+    int dH = YCC_HV[YCCtype][0] >> 4, dV = YCC_HV[YCCtype][0] & 0xF;
     cv::resize(ycrcb[1], ycrcb[1], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
     cv::resize(ycrcb[2], ycrcb[2], cv::Size(), 1.0f / dH, 1.0f / dV); // 444 -> 420
+
+    const int width  = ycrcb[0].cols;
+    const int height = ycrcb[0].rows;
     /*YY|C.*/
     /*YY|..*/
 
@@ -146,7 +173,16 @@ int main(int argc, char* argv[]) {
 
     float scale = QF(quality) / 100.0f;
 
-    auto blkproc = [](cv::Mat& tmp, const float* qmatrix, const float scale, int& prev_dc, const int c, bitstream& encbuf) {
+    int qtableY[64], qtableC[64];
+    for (size_t i = 0; i < 64; ++i) {
+        qtableY[i] = static_cast<int>(clamp(qmatrix[Luma][i] * scale));
+        qtableC[i] = static_cast<int>(clamp(qmatrix[Chroma][i] * scale));
+    }
+
+    encbuf.put_word(SOI);
+    create_mainheader(width, height, num_chn, qtableY, qtableC, YCCtype, encbuf);
+
+    auto blkproc = [](cv::Mat& tmp, const int* qmatrix, const float scale, int& prev_dc, const int c, bitstream& encbuf) {
         cv::Mat blk;
         tmp.convertTo(blk, CV_32F);
         blk -= 128.0f;
@@ -193,37 +229,40 @@ int main(int argc, char* argv[]) {
     };
 
     // MCU 単位での処理
-    const int width  = ycrcb[0].cols;
-    const int height = ycrcb[0].rows;
     // prev_dc[] には前のブロックのDC成分値が入る
-    int prev_dc[3]   = {};
+    int prev_dc[3] = {};
 
     for (int y = 0, cy = 0; y < height; y += 8 * dV, cy += 8) {
         for (int x = 0, cx = 0; x < width; x += 8 * dH, cx += 8) {
             for (int i = 0; i < dV; ++i) {
                 for (int j = 0; j < dH; ++j) {
                     auto tmpY = ycrcb[0](cv::Rect(x + j * 8, y + i * 8, 8, 8)); // Y
-                    blkproc(tmpY, qmatrix[Luma], scale, prev_dc[0], Luma, encbuf);
+                    blkproc(tmpY, qtableY, scale, prev_dc[0], Luma, encbuf);
                 }
-                auto tmpCr = ycrcb[1](cv::Rect(cx, cy, 8, 8)); // Cr
-                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[1], Chroma, encbuf);
-                auto tmpCy = ycrcb[2](cv::Rect(cx, cy, 8, 8)); // Cb
-                blkproc(tmpCr, qmatrix[Chroma], scale, prev_dc[2], Chroma, encbuf);
             }
+            auto tmpCr = ycrcb[2](cv::Rect(cx, cy, 8, 8)); // Cr
+            blkproc(tmpCr, qtableC, scale, prev_dc[2], Chroma, encbuf);
+            auto tmpCy = ycrcb[1](cv::Rect(cx, cy, 8, 8)); // Cb
+            blkproc(tmpCy, qtableC, scale, prev_dc[1], Chroma, encbuf);
         }
     }
 
     auto length = encbuf.finalize();
+    encbuf.put_word(EOI);
+    length += 2;
     std::cout << "codestream size = " << length << std::endl;
+    FILE* fp = fopen("out.jpg", "wb");
+    fwrite(encbuf.get_data(), sizeof(uint8_t), length, fp);
+    fclose(fp);
 
-    // cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
-    // cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
-    // cv::merge(ycrcb, image);
+    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
+    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
+    cv::merge(ycrcb, image);
 
-    // cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
-    // cv::imshow("loaded image", image);
+    cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
+    cv::imshow("loaded image", image);
+    cv::waitKey(0);
+    cv::destroyAllWindows();
 
-    // cv::waitKey(0);
-    // cv::destroyAllWindows();
     return EXIT_SUCCESS;
 }
