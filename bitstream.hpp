@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "jpgmarkers.hpp"
+
 class bitstream {
 private:
     uint8_t tmp;
@@ -52,6 +54,7 @@ public:
     }
     size_t finalize() {
         flush();
+        put_word(EOI);
         return stream.size();
     }
     auto get_data() const { return stream.data(); }
