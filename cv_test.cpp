@@ -26,6 +26,7 @@ int main(int argc, char* argv[]) {
     if (image.empty()) {
         exit(EXIT_FAILURE);
     }
+    cv::Mat original = image.clone(); // PSNR 算出のため
     bitstream encbuf;
 
     const int num_chn = image.channels();
@@ -92,12 +93,18 @@ int main(int argc, char* argv[]) {
         if (QF != 1) {
             qtable[0][i] = static_cast<int>(clamp<float>(qmatrix[0][i] * scale));
             qtable[1][i] = static_cast<int>(clamp<float>(qmatrix[1][i] * scale));
+            if (qtable[0][i] == 0) {
+                qtable[0][i] = 1;
+            }
+            if (qtable[1][i] == 0) {
+                qtable[1][i] = 1;
+            }
         } else {
             qtable[0][i] = qtable[1][i] = 1;
         }
     }
 
-    printf("encoding...\n");
+    // printf("encoding...\n");
     create_mainheader(width, height, num_chn, qtable[Luma], qtable[Chroma], YCCtype, encbuf);
 
     // MCU 単位での処理
@@ -121,7 +128,8 @@ int main(int argc, char* argv[]) {
 
     auto length = encbuf.finalize();
 
-    std::cout << "codestream size = " << length << std::endl;
+    // std::cout << "codestream size = " << length << ", ";
+    std::cout << static_cast<double>(length) * 8.0 / (width * height) << " ";
     FILE* fp = fopen(argv[2], "wb");
     if (fp == nullptr) {
         printf("cant open file '%s'\n", argv[2]);
@@ -131,11 +139,24 @@ int main(int argc, char* argv[]) {
     fwrite(encbuf.get_data(), sizeof(uint8_t), length, fp);
     fclose(fp);
 
-    // cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
-    // cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
-    // cv::merge(ycrcb, image);
+    cv::resize(ycrcb[1], ycrcb[1], cv::Size(), dH, dV); // 420 -> 444
+    cv::resize(ycrcb[2], ycrcb[2], cv::Size(), dH, dV); // 420 -> 444
+    cv::merge(ycrcb, image);
+    cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
 
-    // cv::cvtColor(image, image, cv::COLOR_YCrCb2BGR);
+    double mse = 0.0;
+    for (size_t i = 0; i < height; ++i) {
+        for (size_t j = 0; j < width; ++j) {
+            for (size_t c = 0; c < num_chn; ++c) {
+                int v0 = original.data[i * original.step + j * num_chn + c];
+                int v1 = image.data[i * image.step + j * num_chn + c];
+                mse += (v0 - v1) * (v0 - v1);
+            }
+        }
+    }
+    mse /= (width * height * num_chn);
+    double psnr = 10 * log10(255 * 255 / mse);
+    std::cout << psnr << std::endl;
     // cv::imshow("loaded image", image);
     // cv::waitKey(0);
     // cv::destroyAllWindows();
