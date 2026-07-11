@@ -11,6 +11,8 @@
 #include "ycctype.hpp"
 #include "jpgmarkers.hpp"
 
+#include "measure.hpp"
+
 enum {
     Luma   = 0,
     Chroma = 1,
@@ -32,7 +34,7 @@ int main(int argc, char* argv[]) {
     const int num_chn = image.channels();
 
     auto pixel = image.data;
-    image      = rgb2YCbCr(image);
+    Measure::tictoc(Measure::type::rgb2YCbCr, [&] { image = rgb2YCbCr(image); });
     std::vector<cv::Mat> ycrcb;
     cv::split(image, ycrcb); //[0] -> Y, [1] -> Cr, [2] -> Cb
 
@@ -156,7 +158,7 @@ int main(int argc, char* argv[]) {
     }
     mse /= (width * height * num_chn);
     double psnr = 10 * log10(255 * 255 / mse);
-    std::cout << psnr << std::endl;
+    std::cout << psnr << " " << Measure::getstr() << std::endl;
     // cv::imshow("loaded image", image);
     // cv::waitKey(0);
     // cv::destroyAllWindows();
