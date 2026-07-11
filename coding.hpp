@@ -3,6 +3,7 @@
 #include "bitstream.hpp"
 #include "huffman_tables.hpp"
 #include "zigzag.hpp"
+#include "measure.hpp"
 
 enum {
     DC = 0,
@@ -41,35 +42,37 @@ auto blkproc = [](cv::Mat& tmp, const int* qmatrix, const float scale, int& prev
     tmp.convertTo(blk, CV_32F);
     blk -= 128.0f;
     // Forward DCT
-    cv::dct(blk, blk, FWD);
+    Measure::tictoc(Measure::type::dct, [&] { cv::dct(blk, blk, FWD); });
     // 量子化
-    quantize<FWD>(blk, qmatrix, scale);
+    Measure::tictoc(Measure::type::quantize, [&] { quantize<FWD>(blk, qmatrix, scale); });
 
-    auto p   = reinterpret_cast<float*>(blk.data);
-    // 現在のブロックのDC成分から前のブロックのDC成分を引く
-    int diff = p[0] - prev_dc;
-    prev_dc  = p[0]; // prev_dcを更新
-    encode<DC>(0, diff, DC_cwd[c], DC_len[c], encbuf);
+    Measure::tictoc(Measure::type::encode, [&] {
+        auto p   = reinterpret_cast<float*>(blk.data);
+        // 現在のブロックのDC成分から前のブロックのDC成分を引く
+        int diff = p[0] - prev_dc;
+        prev_dc  = p[0]; // prev_dcを更新
+        encode<DC>(0, diff, DC_cwd[c], DC_len[c], encbuf);
 
-    // AC成分のためのジグザクスキャン・ハフマン符号
-    int zero_run = 0; // 0の連続数
-    for (int i = 1; i < 64; ++i) {
-        auto ac = static_cast<int>(p[zigzag_scan[i]]);
-        if (ac == 0) {
-            ++zero_run;
-        } else {
-            while (zero_run > 15) {
-                encode<AC>(0xf, 0x0, AC_cwd[c], AC_len[c], encbuf);
-                zero_run -= 16;
+        // AC成分のためのジグザクスキャン・ハフマン符号
+        int zero_run = 0; // 0の連続数
+        for (int i = 1; i < 64; ++i) {
+            auto ac = static_cast<int>(p[zigzag_scan[i]]);
+            if (ac == 0) {
+                ++zero_run;
+            } else {
+                while (zero_run > 15) {
+                    encode<AC>(0xf, 0x0, AC_cwd[c], AC_len[c], encbuf);
+                    zero_run -= 16;
+                }
+                encode<AC>(zero_run, ac, AC_cwd[c], AC_len[c], encbuf);
+                zero_run = 0;
             }
-            encode<AC>(zero_run, ac, AC_cwd[c], AC_len[c], encbuf);
-            zero_run = 0;
         }
-    }
-    if (zero_run != 0) {
-        // EOB
-        encode<AC>(0x0, 0x0, AC_cwd[c], AC_len[c], encbuf);
-    }
+        if (zero_run != 0) {
+            // EOB
+            encode<AC>(0x0, 0x0, AC_cwd[c], AC_len[c], encbuf);
+        }
+    });
 
     // 逆量子化
     quantize<INV>(blk, qmatrix, scale);
