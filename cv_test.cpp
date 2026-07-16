@@ -131,7 +131,7 @@ int main(int argc, char* argv[]) {
     auto length = encbuf.finalize();
 
     // std::cout << "codestream size = " << length << ", ";
-    std::cout << static_cast<double>(length) * 8.0 / (width * height) << " ";
+    std::cout << quality << "," << static_cast<double>(length) * 8.0 / (width * height) << ",";
     FILE* fp = fopen(argv[2], "wb");
     if (fp == nullptr) {
         printf("cant open file '%s'\n", argv[2]);
@@ -158,7 +158,7 @@ int main(int argc, char* argv[]) {
     }
     mse /= (width * height * num_chn);
     double psnr = 10 * log10(255 * 255 / mse);
-    std::cout << psnr << " " << Measure::getstr() << std::endl;
+    std::cout << psnr << "," << Measure::getstr(",") << std::endl;
     // cv::imshow("loaded image", image);
     // cv::waitKey(0);
     // cv::destroyAllWindows();

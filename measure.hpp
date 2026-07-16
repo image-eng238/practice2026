@@ -34,7 +34,7 @@ public:
         std::cout << "encode = " << toms(encode) << "ms" << std::endl;
     }
 
-    static auto getstr() {
-        return (std::stringstream() << toms(rgb2YCbCr) << " " << toms(dct) << " " << toms(quantize) << " " << toms(encode)).str();
+    static auto getstr(std::string_view s = " ") {
+        return (std::stringstream() << toms(rgb2YCbCr) << s << toms(dct) << s << toms(quantize) << s << toms(encode)).str();
     }
 };
